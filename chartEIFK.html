@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Select Date Range</title>
+</head>
+<body>
+    <h1>Select Date Range</h1>
+    <form id="dateForm">
+        <label for="start_date">Start Date:</label>
+        <input type="datetime-local" id="start_date" name="start_date" required>
+        <label for="end_date">End Date:</label>
+        <input type="datetime-local" id="end_date" name="end_date" required>
+        <label for="normalize">Normalize Data:</label>
+        <input type="checkbox" id="normalize" name="normalize">
+        <label for="superimpose">Superimpose Data Per Day:</label>
+        <input type="checkbox" id="superimpose" name="superimpose">
+        <button type="submit">Get Data</button>
+    </form>
+    <div>
+        <canvas id="myChart" width="400" height="200"></canvas>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script>
+        let chartInstance = null;
+
+        document.getElementById('dateForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const startDate = document.getElementById('start_date').value;
+            const endDate = document.getElementById('end_date').value;
+            const normalize = document.getElementById('normalize').checked;
+            const superimpose = document.getElementById('superimpose').checked;
+
+            fetch('fetch_data_range.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: `start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}&normalize=${normalize ? 1 : 0}`
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                plotData(data, normalize, superimpose);
+            })
+            .catch(error => console.error('Error:', error));
+        });
+
+        function plotData(data, normalize, superimpose) {
+            const ctx = document.getElementById('myChart').getContext('2d');
+
+            let labels, temperature, pressure, humidity, gas;
+
+            if (superimpose) {
+                const groupedData = {};
+
+                data.forEach(item => {
+                    const date = new Date(item.TimePresent);
+                    date.setHours(date.getHours() + 3); // Adjust to EAT
+                    const timeOnly = date.toTimeString().split(' ')[0];
+                    if (!groupedData[timeOnly]) {
+                        groupedData[timeOnly] = { TemperatureC: 0, PressureHPa: 0, HumidityPercentage: 0, GasKOhms: 0, count: 0 };
+                    }
+                    groupedData[timeOnly].TemperatureC += parseFloat(normalize ? item.NormalizedTemperature : item.TemperatureC);
+                    groupedData[timeOnly].PressureHPa += parseFloat(normalize ? item.NormalizedPressure : item.PressureHPa);
+                    groupedData[timeOnly].HumidityPercentage += parseFloat(normalize ? item.NormalizedHumidity : item.HumidityPercentage);
+                    groupedData[timeOnly].GasKOhms += parseFloat(normalize ? item.NormalizedGas : item.GasKOhms);
+                    groupedData[timeOnly].count += 1;
+                });
+
+                labels = Object.keys(groupedData).sort();
+                temperature = labels.map(time => groupedData[time].TemperatureC / groupedData[time].count);
+                pressure = labels.map(time => groupedData[time].PressureHPa / groupedData[time].count);
+                humidity = labels.map(time => groupedData[time].HumidityPercentage / groupedData[time].count);
+                gas = labels.map(time => groupedData[time].GasKOhms / groupedData[time].count);
+
+                console.log("Grouped Data:", groupedData);
+                console.log("Labels:", labels);
+                console.log("Temperature:", temperature);
+                console.log("Pressure:", pressure);
+                console.log("Humidity:", humidity);
+                console.log("Gas:", gas);
+            } else {
+                labels = data.map(item => {
+                    const date = new Date(item.TimePresent);
+                    date.setHours(date.getHours() + 3); // Adjust to EAT
+                    return date;
+                });
+                temperature = data.map(item => normalize ? item.NormalizedTemperature : item.TemperatureC);
+                pressure = data.map(item => normalize ? item.NormalizedPressure : item.PressureHPa);
+                humidity = data.map(item => normalize ? item.NormalizedHumidity : item.HumidityPercentage);
+                gas = data.map(item => normalize ? item.NormalizedGas : item.GasKOhms);
+            }
+
+            if (chartInstance) {
+                chartInstance.destroy(); // Destroy the existing chart instance
+            }
+
+            const backgroundPlugin = {
+                id: 'backgroundPlugin',
+                beforeDraw: (chart) => {
+                    const ctx = chart.ctx;
+                    const xScale = chart.scales['x'];
+                    const yScale = chart.scales['y'];
+
+                    if (!superimpose) {
+                        const startDate = new Date(data[0].TimePresent);
+                        startDate.setHours(startDate.getHours() + 3); // Adjust to EAT
+                        const endDate = new Date(data[data.length - 1].TimePresent);
+                        endDate.setHours(endDate.getHours() + 3); // Adjust to EAT
+
+                        for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+                            const start7pm = new Date(d);
+                            start7pm.setHours(19, 0, 0, 0);
+                            const end7am = new Date(d);
+                            end7am.setDate(end7am.getDate() + 1);
+                            end7am.setHours(7, 0, 0, 0);
+
+                            const x1 = xScale.getPixelForValue(start7pm);
+                            const x2 = xScale.getPixelForValue(end7am);
+
+                            ctx.save();
+                            ctx.fillStyle = 'rgba(200, 200, 200, 0.2)';
+                            ctx.fillRect(x1, yScale.top, x2 - x1, yScale.bottom - yScale.top);
+                            ctx.restore();
+                        }
+                    }
+                }
+            };
+
+            chartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: normalize ? 'Normalized Temperature' : 'Temperature (°C)',
+                            data: temperature,
+                            borderColor: 'rgba(255, 99, 132, 1)',
+                            borderWidth: 1,
+                            fill: false,
+                            showLine: false, // Disable connecting the points with a line
+                            spanGaps: false // Avoid connecting different days
+                        },
+                        {
+                            label: normalize ? 'Normalized Pressure' : 'Pressure (hPa)',
+                            data: pressure,
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            borderWidth: 1,
+                            fill: false,
+                            showLine: false, // Disable connecting the points with a line
+                            spanGaps: false // Avoid connecting different days
+                        },
+                        {
+                            label: normalize ? 'Normalized Humidity' : 'Humidity (%)',
+                            data: humidity,
+                            borderColor: 'rgba(75, 192, 192, 1)',
+                            borderWidth: 1,
+                            fill: false,
+                            showLine: false, // Disable connecting the points with a line
+                            spanGaps: false // Avoid connecting different days
+                        },
+                        {
+                            label: normalize ? 'Normalized Gas' : 'Gas (kOhms)',
+                            data: gas,
+                            borderColor: 'rgba(153, 102, 255, 1)',
+                            borderWidth: 1,
+                            fill: false,
+                            showLine: false, // Disable connecting the points with a line
+                            spanGaps: false // Avoid connecting different days
+                        }
+                    ]
+                },
+                options: {
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'minute', // Use minute for detailed time intervals
+                                parser: 'HH:mm:ss', // Ensure the parser matches the time format
+                                tooltipFormat: 'HH:mm:ss',
+                                displayFormats: {
+                                    minute: 'HH:mm'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: superimpose ? 'Time of Day' : 'Date and Time'
+                            }
+                        },
+                        y: {
+                            beginAtZero: false
+                        }
+                    },
+                    plugins: {
+                        backgroundPlugin: {} // Enable the custom background plugin
+                    }
+                },
+                plugins: [backgroundPlugin]
+            });
+        }
+
+    </script>
+</body>
+</html>
